@@ -1,0 +1,580 @@
+html, body, #root {
+  margin:0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  font-family: Arial, Helvetica, sans-serif;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.app {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+}
+
+.canvas {
+  flex: 1;
+}
+
+.actions {
+  height: 50px;
+  display: flex;
+  padding: 1em;
+  column-gap: 1em;
+}
+
+.actions-separator {
+  width: 50px;
+}
+
+.genai-actions {
+  display: flex;
+  flex-direction: row;
+  column-gap: 1em;
+  padding: 0.75em 0 0.75em 0.75em;
+  --color-text-1: rgb(255, 255, 255);
+}
+
+.genai-actions button {
+  border-radius: 12px;
+  background-color: blueviolet;
+}
+
+.genai-actions .tlui-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.genai-actions-context-cont {
+  transform-origin: top left;
+  transform: translate(0, 50px);
+  pointer-events: none;
+}
+
+.genai-actions-context {
+  display: flex;
+  flex-direction: row;
+  column-gap: 1em;
+  padding: 0.75em;
+}
+
+.genai-actions-context button {
+  border-radius: 8px;
+  padding: 10px;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transition: background-color 0.2s ease;
+}
+
+.genai-actions-context .tlui-icon {
+  margin-right: 5px;
+}
+
+/* Light mode glassmorphism */
+.genai-actions-context button {
+    background-color: rgba(255, 255, 255, 0.7);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    color: #1e1e1e;
+}
+.genai-actions-context button:hover {
+    background-color: rgba(255, 255, 255, 0.9);
+}
+
+/* NoticeBanner */
+
+.notice-banner {
+  background-color: #fffbe6;
+  color: #5d5123;
+  padding: 6px 40px 6px 20px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.5;
+  position: relative;
+  border-bottom: 1px solid #fff1b8;
+  z-index: 1000;
+}
+
+.notice-banner a {
+  color: #0052cc;
+  font-weight: bold;
+  text-decoration: underline;
+}
+
+.notice-banner a:hover {
+  text-decoration: none;
+}
+
+.notice-bar-close {
+  position: absolute;
+  top: 50%;
+  right: 15px;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: #7b714b;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.notice-bar-close:hover {
+  background-color: rgba(0, 0, 0, 0.08);
+  color: #5d5123;
+}
+
+
+/* NEW Prompt Bar Styles */
+.prompt-bar-wrapper {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    pointer-events: none;
+    width: 100%;
+    max-width: 720px;
+    padding: 0 16px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+}
+
+.mode-switcher {
+    pointer-events: all;
+    background-color: #2a2a2a;
+    padding: 4px;
+    border-radius: 12px;
+    border: 1px solid #444;
+    display: flex;
+    gap: 4px;
+}
+
+.mode-switcher button {
+    background: transparent;
+    border: none;
+    color: #a0a0a0;
+    padding: 6px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.mode-switcher button.active {
+    background-color: #4a4a4a;
+    color: #f0f0f0;
+}
+
+.prompt-bar {
+    pointer-events: all;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    border-radius: 24px;
+    width: 100%;
+    box-sizing: border-box;
+    transition: background-color 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+
+.prompt-input-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    flex-grow: 1;
+}
+
+.prompt-input {
+    flex-grow: 1;
+    background: transparent;
+    border: none;
+    font-size: 16px;
+    outline: none;
+    padding: 8px;
+    min-width: 100px;
+}
+
+.prompt-actions-area {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.prompt-config-buttons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.prompt-bar-button {
+    background-color: transparent;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 8px;
+}
+
+.prompt-bar-button.icon-button {
+    width: 36px;
+    height: 36px;
+}
+
+.prompt-bar-button.config-button {
+    padding: 8px 12px;
+    gap: 6px;
+}
+
+.prompt-bar-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.prompt-bar-button.placeholder {
+    opacity: 0.7;
+    cursor: default;
+}
+
+.prompt-image-preview {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+}
+
+.prompt-image-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 8px;
+}
+
+.prompt-image-preview-close {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    font-size: 14px;
+    line-height: 18px;
+    text-align: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+
+/* Spinner for generating state */
+.spinner {
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top: 3px solid #fff;
+    width: 18px;
+    height: 18px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Image Editor Modal Styles */
+.image-editor-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.8);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+}
+
+.image-editor-canvas-container {
+    position: relative;
+    max-width: 80vw;
+    max-height: 70vh;
+}
+
+.image-editor-canvas-container img,
+.image-editor-canvas-container canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.image-editor-canvas-container canvas {
+    cursor: crosshair;
+    opacity: 0.5;
+}
+
+.image-editor-bottom-bar {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    max-width: 600px;
+}
+
+.image-editor-toolbar {
+    display: flex;
+    gap: 12px;
+    background-color: #2a2a2a;
+    padding: 8px;
+    border-radius: 12px;
+    border: 1px solid #444;
+}
+
+.image-editor-toolbar button {
+    background-color: #383838;
+    color: #f0f0f0;
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.image-editor-toolbar button:hover {
+    background-color: #4a4a4a;
+}
+.image-editor-toolbar button.active {
+    background-color: #5a5a5a;
+    border-color: #777;
+}
+
+.image-editor-toolbar input[type="range"] {
+    width: 100px;
+}
+
+.image-editor-prompt-bar {
+    display: flex;
+    width: 100%;
+    background-color: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 16px;
+    padding: 8px;
+    gap: 8px;
+}
+
+.image-editor-prompt-bar input {
+    flex-grow: 1;
+    background: transparent;
+    border: none;
+    color: #f0f0f0;
+    font-size: 16px;
+    outline: none;
+    padding: 0 8px;
+}
+
+.image-editor-prompt-bar button {
+    background-color: #4a4a4a;
+    color: #f0f0f0;
+    border: none;
+    border-radius: 12px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-weight: 500;
+}
+.image-editor-prompt-bar button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.image-editor-spinner-container {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 10;
+    background: rgba(0,0,0,0.5);
+    padding: 20px;
+    border-radius: 12px;
+}
+
+
+/* Chat History */
+.chat-history-container {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    width: 350px;
+    max-height: calc(100vh - 180px);
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 1000;
+    pointer-events: all;
+
+    background-color: rgba(60, 60, 60, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    border-radius: 16px;
+    scrollbar-width: thin;
+    scrollbar-color: #666 #333;
+}
+
+.chat-message {
+    padding: 12px;
+    border-radius: 12px;
+    line-height: 1.5;
+    font-size: 14px;
+}
+
+.chat-message.user {
+    background-color: rgba(80, 80, 80, 0.8);
+    align-self: flex-end;
+    width: fit-content;
+    max-width: 90%;
+    color: #f0f0f0;
+}
+
+.chat-message.model {
+    background-color: rgba(40, 40, 40, 0.8);
+    align-self: flex-start;
+    width: fit-content;
+    max-width: 90%;
+    color: #d0d0d0;
+}
+
+@media (prefers-color-scheme: dark) {
+    /* Dark mode glassmorphism */
+    .genai-actions-context button {
+        background-color: rgba(60, 60, 60, 0.7);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #f0f0f0;
+    }
+    .genai-actions-context button:hover {
+        background-color: rgba(80, 80, 80, 0.8);
+    }
+
+
+    .prompt-bar {
+        background: #1F1F1F;
+        border: 1px solid #333;
+    }
+
+    .prompt-input {
+        color: #E0E0E0;
+    }
+
+    .prompt-input::placeholder {
+        color: #888;
+    }
+
+    .prompt-bar-button {
+        color: #E0E0E0;
+    }
+
+    .prompt-bar-button.add-button {
+        color: #A0A0A0;
+    }
+
+    .prompt-bar-button.config-button {
+        background-color: #333;
+    }
+    
+    .prompt-bar-button.icon-button {
+        background-color: transparent;
+    }
+    
+    .prompt-bar-button:hover:not(:disabled):not(.placeholder) {
+        background-color: #444;
+    }
+
+    .prompt-bar-button.config-button.active {
+        background-color: #4a4a4a;
+        color: #fff;
+    }
+
+    .prompt-bar-button.submit-button {
+        background-color: #333;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        margin-left: auto;
+    }
+
+    .prompt-bar-button.submit-button:hover:not(:disabled) {
+        background-color: #444;
+    }
+    
+    .prompt-image-preview-close {
+        background: #1e1e1e;
+        color: white;
+        border: none;
+        box-shadow: none;
+        line-height: 20px;
+    }
+
+    /* Dropdown Styles */
+    .dropdown-wrapper {
+        position: relative;
+        display: inline-block;
+    }
+
+    .dropdown-menu {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: #383838;
+        border-radius: 8px;
+        padding: 4px;
+        z-index: 1000;
+        min-width: 80px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        border: 1px solid #444;
+    }
+
+    .dropdown-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        border-radius: 4px;
+        text-align: center;
+        color: #E0E0E0;
+        font-weight: 500;
+    }
+
+    .dropdown-item:hover {
+        background-color: #4a4a4a;
+    }
+}
