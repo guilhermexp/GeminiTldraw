@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 /* tslint:disable */
+import * as React from 'react';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {TLShapeId} from 'tldraw';
 

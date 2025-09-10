@@ -14,6 +14,9 @@ export function ImageEditor({
   onCancel,
   onSave,
   editImageApi,
+  initialPrompt,
+  overlaySrc,
+  overlayDefaultOn = true,
 }: {
   image: {assetId: TLAssetId; src: string; bounds: Box};
   onCancel: () => void;
@@ -22,12 +25,17 @@ export function ImageEditor({
     imageBlob: Blob,
     maskBlob: Blob,
     prompt: string,
+    overlayBlob?: Blob,
   ) => Promise<string>;
+  initialPrompt?: string;
+  overlaySrc?: string;
+  overlayDefaultOn?: boolean;
 }) {
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(initialPrompt ?? '');
   const [isLoading, setIsLoading] = useState(false);
   const [brushSize, setBrushSize] = useState(40);
   const [isErasing, setIsErasing] = useState(false);
+  const [useOverlay, setUseOverlay] = useState(!!overlaySrc && overlayDefaultOn);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -133,7 +141,17 @@ export function ImageEditor({
 
       if (!maskBlob) throw new Error('Could not create mask blob.');
 
-      const newImageSrc = await editImageApi(imageBlob, maskBlob, prompt);
+      let overlayBlob: Blob | undefined = undefined;
+      if (useOverlay && overlaySrc) {
+        overlayBlob = await urlToBlob(overlaySrc);
+      }
+
+      const newImageSrc = await editImageApi(
+        imageBlob,
+        maskBlob,
+        prompt,
+        overlayBlob,
+      );
       await onSave(image.assetId, newImageSrc);
     } catch (error) {
       console.error('Error during image editing:', error);
@@ -180,15 +198,30 @@ export function ImageEditor({
             onChange={(e) => setBrushSize(Number(e.target.value))}
             title="Brush Size"
           />
+          {overlaySrc && (
+            <label style={{display: 'flex', alignItems: 'center', gap: 6, color: '#f0f0f0'}}>
+              <input
+                type="checkbox"
+                checked={useOverlay}
+                onChange={(e) => setUseOverlay(e.target.checked)}
+              />
+              Use overlay
+            </label>
+          )}
         </div>
         <div className="image-editor-prompt-bar">
           <input
             type="text"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe your edit..."
+            placeholder="Pinte em branco onde quer alterar. Descreva a edição..."
             disabled={isLoading}
           />
+          {overlaySrc && (
+            <div className="prompt-image-preview">
+              <img src={overlaySrc} alt="overlay" />
+            </div>
+          )}
           <button
             onClick={handleGenerate}
             disabled={isLoading || prompt.length === 0}>

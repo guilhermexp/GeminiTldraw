@@ -29,6 +29,7 @@ import {
   // FIX: Import `Type` to use for function declaration schemas.
   Type,
 } from '@google/genai';
+import { fal } from '@fal-ai/client';
 import {useEffect, useRef, useState} from 'react';
 import ReactDOM from 'react-dom/client';
 import {
@@ -69,11 +70,151 @@ import {
 } from './utils';
 
 const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+fal.config({ credentials: process.env.FAL_KEY });
 
 const GEMINI_MODEL_NAME = 'gemini-2.5-flash';
 const IMAGEN_MODEL_NAME = 'imagen-4.0-generate-001';
 const GEMINI_IMAGE_MODEL_NAME = 'gemini-2.5-flash-image-preview';
-const VEO_MODEL_NAME = 'veo-2.0-generate-001';
+const VEO_MODEL_NAME = 'veo-3.0-generate-001';
+
+function aspectToSize(aspect: string, base = 1024): string {
+  // Returns WxH for fal models based on common aspect ratios
+  const [w, h] = aspect.split(':').map((n) => parseInt(n, 10));
+  if (!w || !h) return '1024x1024';
+  const ratio = w / h;
+  if (ratio > 1) {
+    return `${Math.round(base)}x${Math.round(base / ratio)}`;
+  } else if (ratio < 1) {
+    return `${Math.round(base * ratio)}x${Math.round(base)}`;
+  }
+  return `${base}x${base}`;
+}
+
+async function falTextToImages(
+  prompt: string,
+  numberOfImages = 1,
+  aspectRatio = '1:1',
+): Promise<string[]> {
+  try {
+    const size = aspectToSize(aspectRatio, 1024);
+    const result: any = await fal.subscribe('fal-ai/flux/schnell', {
+      // cast to any to avoid SDK narrow input typings mismatch across versions
+      input: {
+        prompt,
+        image_size: size,
+        num_images: numberOfImages,
+      } as any,
+    } as any);
+    const images = (result?.images || result?.data?.images || result?.output?.images || []) as any[];
+    return images
+      .map((im) => im?.url)
+      .filter(Boolean)
+      .map((url: string) => url);
+  } catch (e) {
+    console.error('FAL text-to-image fallback failed', e);
+    return [];
+  }
+}
+
+async function falImageToImages(
+  prompt: string,
+  imageDataUrl: string,
+  numberOfImages = 1,
+  aspectRatio = '1:1',
+): Promise<string[]> {
+  try {
+    const size = aspectToSize(aspectRatio, 1024);
+    const result: any = await fal.subscribe('fal-ai/flux/dev/image-to-image', {
+      input: {
+        prompt,
+        image_url: imageDataUrl,
+        image_size: size,
+        num_images: numberOfImages,
+      } as any,
+    } as any);
+    const images = (result?.images || result?.data?.images || result?.output?.images || []) as any[];
+    return images
+      .map((im) => im?.url)
+      .filter(Boolean)
+      .map((url: string) => url);
+  } catch (e) {
+    console.error('FAL image-to-image fallback failed', e);
+    return [];
+  }
+}
+
+async function falInpaint(
+  prompt: string,
+  imageDataUrl: string,
+  maskDataUrl: string,
+): Promise<string[]> {
+  try {
+    const result: any = await fal.subscribe('fal-ai/flux-general/inpainting', {
+      input: {
+        prompt,
+        image_url: imageDataUrl,
+        mask_url: maskDataUrl,
+      } as any,
+    } as any);
+    const images = (result?.images || result?.data?.images || result?.output?.images || []) as any[];
+    return images
+      .map((im) => im?.url)
+      .filter(Boolean)
+      .map((url: string) => url);
+  } catch (e) {
+    console.error('FAL inpaint fallback failed', e);
+    return [];
+  }
+}
+
+async function falVeo3Video(
+  prompt: string,
+  aspectRatio = '16:9',
+  imageDataUrl?: string,
+): Promise<string[]> {
+  try {
+    const result: any = await fal.subscribe('fal-ai/veo3', {
+      input: {
+        prompt,
+        aspect_ratio: aspectRatio as any,
+        image_url: imageDataUrl,
+      } as any,
+    } as any);
+    const videos = (result?.videos || result?.data?.videos || result?.output?.videos || []) as any[];
+    if (videos?.length) {
+      return videos.map((v) => v?.url).filter(Boolean);
+    }
+    // Some endpoints may return single video url
+    const single = (result?.video || result?.data?.video || result?.output?.video)?.url;
+    return single ? [single] : [];
+  } catch (e) {
+    console.error('FAL Veo3 video fallback failed', e);
+    return [];
+  }
+}
+
+// Fallback flags + notification hook
+type FalFallbackConfig = {
+  text2img: boolean;
+  img2img: boolean;
+  inpaint: boolean;
+  video: boolean;
+};
+
+let falFallbackConfig: FalFallbackConfig = {
+  text2img: true,
+  img2img: true,
+  inpaint: true,
+  video: true,
+};
+
+let notifyFallback: ((msg: string) => void) | null = null;
+function setFalFallbackConfig(partial: Partial<FalFallbackConfig>) {
+  falFallbackConfig = { ...falFallbackConfig, ...partial };
+}
+function setNotifyFallback(fn: ((msg: string) => void) | null) {
+  notifyFallback = fn;
+}
 
 async function describeImage(imageBlob: Blob): Promise<string> {
   const imageDataBase64 = await bloblToBase64(imageBlob);
@@ -98,29 +239,47 @@ async function editImage(
   imageBlob: Blob,
   maskBlob: Blob,
   prompt: string,
+  overlayBlob?: Blob,
 ): Promise<string> {
   const imageBase64 = await bloblToBase64(imageBlob);
   const maskBase64 = await bloblToBase64(maskBlob);
+  const imagePart = { inlineData: { data: imageBase64, mimeType: 'image/png' } };
+  const maskPart = { inlineData: { data: maskBase64, mimeType: 'image/png' } };
+  const textPart = { text: prompt };
+  const overlayPart = overlayBlob
+    ? { inlineData: { data: await bloblToBase64(overlayBlob), mimeType: 'image/png' } }
+    : null;
 
-  const imagePart = {
-    inlineData: {data: imageBase64, mimeType: 'image/png'},
-  };
-  const maskPart = {inlineData: {data: maskBase64, mimeType: 'image/png'}};
-  const textPart = {text: prompt};
+  try {
+    const response = await ai.models.generateContent({
+      model: GEMINI_IMAGE_MODEL_NAME,
+      contents: { parts: overlayPart ? [textPart, imagePart, maskPart, overlayPart] : [textPart, imagePart, maskPart] },
+      config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+    });
+    const imagePartRes = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+    if (imagePartRes?.inlineData) {
+      return `data:${imagePartRes.inlineData.mimeType};base64,${imagePartRes.inlineData.data}`;
+    }
+    throw new Error('Gemini did not return an image for editImage');
+  } catch (e) {
+    console.warn('Gemini edit failed', e);
+    if (!process.env.FAL_KEY || !falFallbackConfig.inpaint) {
+      throw e;
+    }
+    console.warn('Trying FAL inpainting fallback');
+    notifyFallback?.('Usando fallback FAL: inpainting');
+  }
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_IMAGE_MODEL_NAME,
-    contents: {parts: [textPart, imagePart, maskPart]},
-    config: {
-      responseModalities: [Modality.IMAGE, Modality.TEXT],
-    },
-  });
-
-  const imagePartRes = response.candidates?.[0]?.content?.parts?.find(
-    (p) => p.inlineData,
-  );
-  if (imagePartRes?.inlineData) {
-    return `data:${imagePartRes.inlineData.mimeType};base64,${imagePartRes.inlineData.data}`;
+  // Fallback to FAL inpainting
+  const baseDataUrl = `data:image/png;base64,${imageBase64}`;
+  const maskDataUrl = `data:image/png;base64,${maskBase64}`;
+  const falImages = await falInpaint(prompt, baseDataUrl, maskDataUrl);
+  if (falImages.length > 0) {
+    // Fetch and convert to data URL
+    const res = await fetch(falImages[0]);
+    const blob = await res.blob();
+    const b64 = await bloblToBase64(blob);
+    return `data:${blob.type || 'image/png'};base64,${b64}`;
   }
   throw new Error('Image editing failed to produce an image.');
 }
@@ -141,54 +300,87 @@ async function generateImages(
     const imagePart = {inlineData: {mimeType, data: imageDataBase64}};
     const textPart = {text: prompt};
 
-    const generationPromises = Array.from({length: numberOfImages}).map(() =>
-      ai.models.generateContent({
-        model: GEMINI_IMAGE_MODEL_NAME,
-        contents: {parts: [imagePart, textPart]},
-        config: {
-          responseModalities: [Modality.IMAGE, Modality.TEXT],
-        },
-      }),
-    );
-    const responses = await Promise.all(generationPromises);
-
-    for (const res of responses) {
-      const imagePartRes = res.candidates?.[0]?.content?.parts?.find(
-        (p) => p.inlineData,
+    try {
+      const generationPromises = Array.from({length: numberOfImages}).map(() =>
+        ai.models.generateContent({
+          model: GEMINI_IMAGE_MODEL_NAME,
+          contents: {parts: [imagePart, textPart]},
+          config: {
+            responseModalities: [Modality.IMAGE, Modality.TEXT],
+          },
+        }),
       );
-      if (imagePartRes && imagePartRes.inlineData) {
-        const src = `data:${imagePartRes.inlineData.mimeType};base64,${imagePartRes.inlineData.data}`;
-        imageObjects.push(src);
+      const responses = await Promise.all(generationPromises);
+
+      for (const res of responses) {
+        const imagePartRes = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+        if (imagePartRes && imagePartRes.inlineData) {
+          const src = `data:${imagePartRes.inlineData.mimeType};base64,${imagePartRes.inlineData.data}`;
+          imageObjects.push(src);
+        }
+      }
+      if (imageObjects.length === 0) {
+        throw new Error('Gemini did not return images (image→image)');
+      }
+    } catch (e) {
+      console.warn('Gemini image-to-image failed', e);
+      if (process.env.FAL_KEY && falFallbackConfig.img2img) {
+        console.warn('Trying FAL image-to-image fallback');
+        notifyFallback?.('Usando fallback FAL: image-to-image');
+        // Fallback to FAL image-to-image
+        const dataUrl = imageDataBase64.startsWith('data:') ? imageDataBase64 : `data:${mimeType};base64,${imageDataBase64}`;
+        const falImgs = await falImageToImages(prompt, dataUrl, numberOfImages, aspectRatio);
+        for (const url of falImgs) {
+          try {
+            const r = await fetch(url);
+            const b = await r.blob();
+            const b64 = await bloblToBase64(b);
+            imageObjects.push(`data:${b.type || 'image/jpeg'};base64,${b64}`);
+          } catch {}
+        }
       } else {
-        console.error(
-          'No image data found in one of the responses for prompt:',
-          prompt,
-        );
+        throw e;
       }
     }
-    if (imageObjects.length === 0) {
-      throw new Error(`No image data found for prompt: ${prompt}`);
-    }
   } else {
-    const response = await ai.models.generateImages({
-      model: IMAGEN_MODEL_NAME,
-      prompt,
-      config: {
-        numberOfImages,
-        aspectRatio: aspectRatio,
-        outputMimeType: 'image/jpeg',
-      },
-    });
-
-    if (response?.generatedImages) {
-      response.generatedImages.forEach(
-        (generatedImage: GeneratedImage, index: number) => {
+    try {
+      const response = await ai.models.generateImages({
+        model: IMAGEN_MODEL_NAME,
+        prompt,
+        config: {
+          numberOfImages,
+          aspectRatio: aspectRatio,
+          outputMimeType: 'image/jpeg',
+        },
+      });
+      if (response?.generatedImages) {
+        response.generatedImages.forEach((generatedImage: GeneratedImage) => {
           if (generatedImage.image?.imageBytes) {
             const src = `data:image/jpeg;base64,${generatedImage.image.imageBytes}`;
             imageObjects.push(src);
           }
-        },
-      );
+        });
+      }
+      if (imageObjects.length === 0) {
+        throw new Error('Imagen did not return images (text→image)');
+      }
+    } catch (e) {
+      console.warn('Imagen text-to-image failed', e);
+      if (process.env.FAL_KEY && falFallbackConfig.text2img) {
+        console.warn('Trying FAL text-to-image fallback');
+        notifyFallback?.('Usando fallback FAL: text-to-image');
+        const falImgs = await falTextToImages(prompt, numberOfImages, aspectRatio);
+        for (const url of falImgs) {
+          try {
+            const r = await fetch(url);
+            const b = await r.blob();
+            const b64 = await bloblToBase64(b);
+            imageObjects.push(`data:${b.type || 'image/jpeg'};base64,${b64}`);
+          } catch {}
+        }
+      } else {
+        throw e;
+      }
     }
   }
 
@@ -201,69 +393,71 @@ async function generateVideo(
   numberOfVideos = 1,
   aspectRatio = '16:9',
 ): Promise<string[]> {
-  let operation = null;
-  if (imageBlob) {
-    const imageDataBase64 = await bloblToBase64(imageBlob);
-    const image = {
-      imageBytes: imageDataBase64,
-      mimeType: 'image/png',
-    };
-    operation = await ai.models.generateVideos({
-      model: VEO_MODEL_NAME,
-      prompt,
-      image,
-      config: {
-        numberOfVideos,
-        aspectRatio: aspectRatio,
-      },
-    });
-  } else {
-    operation = await ai.models.generateVideos({
-      model: VEO_MODEL_NAME,
-      prompt,
-      config: {
-        numberOfVideos,
-        aspectRatio: aspectRatio,
-      },
-    });
-  }
-
-  while (!operation.done) {
-    await new Promise((resolve) => setTimeout(resolve, 10000));
-    console.log('...Generating...');
-    operation = await ai.operations.getVideosOperation({operation});
-    console.log(operation, operation.error);
-  }
-
-  if (operation?.response) {
-    const response = operation.response;
-    console.log(response);
-
-    if (
-      response.raiMediaFilteredCount &&
-      response.raiMediaFilteredReasons.length > 0
-    ) {
-      throw new Error(response.raiMediaFilteredReasons[0]);
+  try {
+    let operation = null;
+    if (imageBlob) {
+      const imageDataBase64 = await bloblToBase64(imageBlob);
+      const image = { imageBytes: imageDataBase64, mimeType: 'image/png' };
+      operation = await ai.models.generateVideos({
+        model: VEO_MODEL_NAME,
+        prompt,
+        image,
+        config: { numberOfVideos, aspectRatio },
+      });
+    } else {
+      operation = await ai.models.generateVideos({
+        model: VEO_MODEL_NAME,
+        prompt,
+        config: { numberOfVideos, aspectRatio },
+      });
     }
 
-    if (operation?.response.generatedVideos) {
-      return await Promise.all(
-        response.generatedVideos.map(
-          async (
-            generatedVideo: GeneratedVideo,
-            index: number,
-            videos: GeneratedVideo[],
-          ) => {
+    while (!operation.done) {
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+      console.log('...Generating...');
+      operation = await ai.operations.getVideosOperation({ operation });
+      console.log(operation, operation.error);
+    }
+
+    if (operation?.response) {
+      const response = operation.response;
+      if (
+        response.raiMediaFilteredCount &&
+        response.raiMediaFilteredReasons.length > 0
+      ) {
+        throw new Error(response.raiMediaFilteredReasons[0]);
+      }
+      if (operation?.response.generatedVideos) {
+        return await Promise.all(
+          response.generatedVideos.map(async (generatedVideo: GeneratedVideo) => {
             const url = decodeURIComponent(generatedVideo.video.uri);
             const res = await fetch(`${url}&key=${process.env.API_KEY}`);
             const blob = await res.blob();
             return bloblToBase64(blob);
-          },
-        ),
-      );
+          }),
+        );
+      }
     }
+  } catch (e) {
+    console.warn('Veo (Google) failed, trying FAL Veo3 fallback', e);
   }
-  return [];
+
+  // Fallback to FAL Veo3
+  if (!(process.env.FAL_KEY && falFallbackConfig.video)) {
+    return [];
+  }
+  notifyFallback?.('Usando fallback FAL: video');
+  const imageDataUrl = imageBlob ? `data:image/png;base64,${await bloblToBase64(imageBlob)}` : undefined;
+  const urls = await falVeo3Video(prompt, aspectRatio, imageDataUrl);
+  const out: string[] = [];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      out.push(await bloblToBase64(blob));
+    } catch {}
+  }
+  return out;
 }
 
 const describeClick = async (editor: Editor) => {
@@ -870,6 +1064,82 @@ const runEditImage = async (
   editor.select(shapeId);
 };
 
+// Flatten overlay image pixels into the base image asset (no AI)
+const bakeOverlayBetweenShapes = async (
+  editor: Editor,
+  baseShapeId: TLShapeId,
+  overlayShapeId: TLShapeId,
+) => {
+  const baseShape = editor.getShape<TLImageShape>(baseShapeId);
+  const overlayShape = editor.getShape<TLImageShape>(overlayShapeId);
+  if (!baseShape || !overlayShape) throw new Error('Both shapes must be images.');
+
+  const baseBounds = editor.getShapePageBounds(baseShapeId)!;
+  const overlayBounds = editor.getShapePageBounds(overlayShapeId)!;
+
+  // Export images
+  const baseExport = await editor.toImage([baseShapeId], {
+    format: 'png',
+    scale: 1,
+    background: true,
+  });
+  const overlayExport = await editor.toImage([overlayShapeId], {
+    format: 'png',
+    scale: 1,
+    background: false,
+  });
+
+  // Create bitmaps
+  const baseBitmap = await createImageBitmap(baseExport.blob);
+  const overlayBitmap = await createImageBitmap(overlayExport.blob);
+
+  // Draw onto canvas aligned to base bounds
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(baseBounds.width));
+  canvas.height = Math.max(1, Math.round(baseBounds.height));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get 2D context.');
+  ctx.drawImage(baseBitmap, 0, 0);
+
+  const dx = Math.round(overlayBounds.left - baseBounds.left);
+  const dy = Math.round(overlayBounds.top - baseBounds.top);
+  ctx.drawImage(overlayBitmap, dx, dy);
+
+  // Convert to data URL
+  const newSrc = await new Promise<string>((resolve, reject) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) return reject(new Error('Failed to bake overlay'));
+      const base64 = await bloblToBase64(blob);
+      resolve(`data:image/png;base64,${base64}`);
+    }, 'image/png');
+  });
+
+  // Update asset
+  const assetId = baseShape.props.assetId;
+  const existingAsset = editor.getAsset(assetId);
+  if (!existingAsset || existingAsset.type !== 'image') {
+    throw new Error('Base asset not found or not an image.');
+  }
+  editor.updateAssets([
+    {
+      id: assetId,
+      type: 'image',
+      props: {
+        src: newSrc,
+        w: Math.round(baseBounds.width),
+        h: Math.round(baseBounds.height),
+        name: existingAsset.props.name,
+        isAnimated: false,
+        mimeType: 'image/png',
+      },
+    },
+  ]);
+
+  // Optionally remove overlay shape
+  editor.deleteShapes([overlayShapeId]);
+  editor.select(baseShapeId);
+};
+
 // ---
 
 const assetUrls: TldrawProps['assetUrls'] = {
@@ -891,9 +1161,19 @@ const OverlayComponent = track(
     assistantImage,
     onClearAssistantImage,
     setAssistantImage,
+    falCfg,
+    onFalCfgChange,
   }: {
     setEditingImage: (
-      image: {assetId: TLAssetId; src: string; bounds: Box} | null,
+      image:
+        | {
+            assetId: TLAssetId;
+            src: string;
+            bounds: Box;
+            initialPrompt?: string;
+            overlaySrc?: string;
+          }
+        | null,
     ) => void;
     mode: 'create' | 'assistant';
     setMode: (mode: 'create' | 'assistant') => void;
@@ -904,6 +1184,8 @@ const OverlayComponent = track(
     assistantImage: {src: string; shapeId: TLShapeId} | null;
     onClearAssistantImage: () => void;
     setAssistantImage: (image: {src: string; shapeId: TLShapeId}) => void;
+    falCfg: { text2img: boolean; img2img: boolean; inpaint: boolean; video: boolean };
+    onFalCfgChange: (cfg: { text2img: boolean; img2img: boolean; inpaint: boolean; video: boolean }) => void;
   }) => {
     const editor = useEditor();
     const {addToast} = useToasts();
@@ -928,6 +1210,56 @@ const OverlayComponent = track(
             zIndex: 1001,
           }}>
           <DefaultToolbar />
+        </div>
+        <div
+          style={{
+            position: 'absolute',
+            top: '10px',
+            right: '10px',
+            pointerEvents: 'all',
+            zIndex: 1001,
+            background: 'rgba(40,40,40,0.7)',
+            color: '#eee',
+            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 12,
+            padding: '8px 12px',
+            fontSize: 12,
+            maxWidth: 200,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Fallback FAL</div>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={falCfg.text2img}
+              onChange={(e) => onFalCfgChange({ ...falCfg, text2img: e.target.checked })}
+            />
+            text→image
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={falCfg.img2img}
+              onChange={(e) => onFalCfgChange({ ...falCfg, img2img: e.target.checked })}
+            />
+            image→image
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={falCfg.inpaint}
+              onChange={(e) => onFalCfgChange({ ...falCfg, inpaint: e.target.checked })}
+            />
+            inpaint (mask)
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={falCfg.video}
+              onChange={(e) => onFalCfgChange({ ...falCfg, video: e.target.checked })}
+            />
+            video
+          </label>
         </div>
         <ContextualToolbarComponent
           setEditingImage={setEditingImage}
@@ -975,7 +1307,15 @@ const ContextualToolbarComponent = track(
     setAssistantImage,
   }: {
     setEditingImage: (
-      image: {assetId: TLAssetId; src: string; bounds: Box} | null,
+      image:
+        | {
+            assetId: TLAssetId;
+            src: string;
+            bounds: Box;
+            initialPrompt?: string;
+            overlaySrc?: string;
+          }
+        | null,
     ) => void;
     mode: 'create' | 'assistant';
     setAssistantImage: (image: {src: string; shapeId: TLShapeId}) => void;
@@ -1038,6 +1378,63 @@ const ContextualToolbarComponent = track(
             editor.selectNone();
           },
         });
+        actions.push({
+          label: 'Edit',
+          title: 'Edit selected image',
+          icon: 'genai-edit-image',
+          onClick: async () => {
+            const imageShape = imageShapes[0] as TLImageShape;
+            const asset = editor.getAsset(imageShape.props.assetId);
+            if (!asset) return;
+            const bounds = editor.getShapePageBounds(imageShape.id);
+            setEditingImage({
+              assetId: asset.id,
+              src: asset.props.src,
+              bounds: bounds!,
+            });
+          },
+        });
+        if (imageShapes.length === 2) {
+          actions.push({
+            label: 'Compose (AI)',
+            title: 'Open mask editor with overlay',
+            icon: 'genai-generate-image',
+            onClick: async () => {
+              const [s1, s2] = imageShapes as TLImageShape[];
+              const b1 = editor.getShapePageBounds(s1.id)!;
+              const b2 = editor.getShapePageBounds(s2.id)!;
+              const base = b1.width * b1.height >= b2.width * b2.height ? s1 : s2;
+              const overlay = base === s1 ? s2 : s1;
+              const baseAsset = editor.getAsset(base.props.assetId);
+              const overlayAsset = editor.getAsset(overlay.props.assetId);
+              if (!baseAsset || !overlayAsset) return;
+              const baseBounds = editor.getShapePageBounds(base.id)!;
+              setEditingImage({
+                assetId: baseAsset.id,
+                src: baseAsset.props.src,
+                bounds: baseBounds,
+                overlaySrc: overlayAsset.props.src,
+              });
+            },
+          });
+          actions.push({
+            label: 'Bake Overlay',
+            title: 'Flatten overlay into base image',
+            icon: 'genai-edit-image',
+            onClick: async () => {
+              const [s1, s2] = imageShapes as TLImageShape[];
+              const b1 = editor.getShapePageBounds(s1.id)!;
+              const b2 = editor.getShapePageBounds(s2.id)!;
+              const base = b1.width * b1.height >= b2.width * b2.height ? s1 : s2;
+              const overlay = base === s1 ? s2 : s1;
+              try {
+                await bakeOverlayBetweenShapes(editor, base.id, overlay.id);
+              } catch (e) {
+                addToast({title: e.message, severity: 'error'});
+              }
+            },
+          });
+        }
       }
     } else {
       if (singleImageSelected) {
@@ -1197,14 +1594,25 @@ const Ui = () => {
     lastAssistantImageInChat,
     setLastAssistantImageInChat,
   ] = useState<{src: string; shapeId: TLShapeId} | null>(null);
+  const [falCfg, setFalCfg] = useState({ text2img: false, img2img: false, inpaint: false, video: false });
 
   const [editingImage, setEditingImage] = useState<{
     assetId: TLAssetId;
     src: string;
     bounds: Box;
+    initialPrompt?: string;
+    overlaySrc?: string;
   } | null>(null);
   const {addToast} = useToasts();
   const editor = useEditor();
+
+  useEffect(() => {
+    setFalFallbackConfig(falCfg);
+  }, [falCfg]);
+  useEffect(() => {
+    setNotifyFallback(() => (msg: string) => addToast({ title: msg, severity: 'info' }));
+    return () => setNotifyFallback(null);
+  }, [addToast]);
 
   const handleSaveEditedImage = async (assetId: TLAssetId, newSrc: string) => {
     try {
@@ -1347,7 +1755,7 @@ const Ui = () => {
 
     let response = await chat.sendMessage({message: userParts});
 
-    while (response.candidates[0].content.parts[0].functionCall) {
+  while (response.candidates[0].content.parts[0].functionCall) {
       const fn = response.candidates[0].content.parts[0].functionCall;
       console.log('Function call:', fn);
 
@@ -1360,9 +1768,33 @@ const Ui = () => {
                 'No image selected for editing. The user must select an image and click "Use in Chat" first.',
             };
           } else {
-            const {prompt} = fn.args;
-            await runEditImage(editor, prompt as string, shapeIdForEditing);
-            result = {output: `Successfully edited the image.`};
+            const {prompt: editPrompt} = fn.args;
+            // Open mask editor with the assistant's prompt prefilled
+            const imgShape = editor.getShape<TLImageShape>(shapeIdForEditing);
+            if (!imgShape) {
+              result = {error: 'Selected shape is not an image.'};
+            } else {
+              const asset = editor.getAsset(imgShape.props.assetId);
+              const bounds = editor.getShapePageBounds(imgShape.id);
+              if (!asset || !bounds) {
+                result = {error: 'Could not locate image asset or bounds.'};
+              } else {
+                // If an assistant image is present and is different from the target, pass as overlay
+                const overlaySrc =
+                  lastAssistantImageInChat &&
+                  lastAssistantImageInChat.shapeId !== shapeIdForEditing
+                    ? lastAssistantImageInChat.src
+                    : undefined;
+                setEditingImage({
+                  assetId: asset.id,
+                  src: asset.props.src,
+                  bounds,
+                  initialPrompt: editPrompt as string,
+                  overlaySrc,
+                });
+                result = {output: 'Opened mask editor. Paint the area to edit and click Generate.'};
+              }
+            }
           }
         } else if (fn.name === 'generateImage') {
           const {prompt, numberOfImages, aspectRatio} = fn.args;
@@ -1426,6 +1858,8 @@ const Ui = () => {
         assistantImage={assistantImage}
         onClearAssistantImage={() => setAssistantImage(null)}
         setAssistantImage={setAssistantImage}
+        falCfg={falCfg}
+        onFalCfgChange={setFalCfg}
       />
       {mode === 'assistant' && <ChatHistoryUI history={chatHistory} />}
       {editingImage && (
@@ -1434,6 +1868,8 @@ const Ui = () => {
           onCancel={() => setEditingImage(null)}
           onSave={handleSaveEditedImage}
           editImageApi={editImage}
+          initialPrompt={editingImage.initialPrompt}
+          overlaySrc={editingImage.overlaySrc}
         />
       )}
     </>
@@ -1456,6 +1892,7 @@ export default function App() {
         onMount={(editor) => {
           editor.user.updateUserPreferences({
             animationSpeed: 1,
+            locale: 'en',
           });
           editor.zoomToFit();
         }}
