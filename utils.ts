@@ -138,17 +138,17 @@ export function createArrowBetweenShapes(
       x: arrowPointInParentSpace.x,
       y: arrowPointInParentSpace.y,
       props: {
-        color: 'violet',
-        dash: 'dashed',
-        bend: 50,
+        color: 'grey',
+        dash: 'solid',
+        bend: 20,
 
         start: {
           x: arrowPointInParentSpace.x - startTerminalPagePosition.x,
-          y: arrowPointInParentSpace.x - startTerminalPagePosition.x,
+          y: arrowPointInParentSpace.y - startTerminalPagePosition.y,
         },
         end: {
           x: arrowPointInParentSpace.x - endTerminalPagePosition.x,
-          y: arrowPointInParentSpace.x - endTerminalPagePosition.x,
+          y: arrowPointInParentSpace.y - endTerminalPagePosition.y,
         },
       },
     });

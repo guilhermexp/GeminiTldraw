@@ -335,7 +335,7 @@ html, body, #root {
 
 .image-editor-canvas-container canvas {
     cursor: crosshair;
-    opacity: 0.35;
+    opacity: 1;
 }
 
 .image-editor-bottom-bar {
@@ -577,4 +577,23 @@ html, body, #root {
     .dropdown-item:hover {
         background-color: #4a4a4a;
     }
+}
+/* Hide tldraw branding helper buttons */
+.tlui-helper-buttons,
+.tlui-helper-buttons *,
+div[class*="helper-buttons"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Hide tldraw watermark (requires proper licensing to remove in production) */
+.tl-watermark_SEE-LICENSE,
+div[class*="watermark"],
+.tlui-watermark {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }

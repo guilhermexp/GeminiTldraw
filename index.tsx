@@ -56,7 +56,6 @@ import {
   useToasts,
 } from 'tldraw';
 import {ImageEditor} from './Components/ImageEditor';
-import {NoticeBanner} from './Components/NoticeBanner';
 import {PromptBar} from './Components/PromptBar';
 import {
   addPlaceholder,
@@ -72,10 +71,14 @@ import {
 const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
 fal.config({ credentials: process.env.FAL_KEY });
 
-const GEMINI_MODEL_NAME = 'gemini-2.5-flash';
+// Use Pro for orchestration (better tool planning/selection)
+const GEMINI_MODEL_NAME = 'gemini-2.5-pro';
 const IMAGEN_MODEL_NAME = 'imagen-4.0-generate-001';
 const GEMINI_IMAGE_MODEL_NAME = 'gemini-2.5-flash-image-preview';
 const VEO_MODEL_NAME = 'veo-3.0-generate-001';
+// Toggle: draw connector arrows between source and generated items
+const ENABLE_CONNECTOR_ARROWS = true;
+const TEXT_CARD_MAX_W = 480;
 
 function aspectToSize(aspect: string, base = 1024): string {
   // Returns WxH for fal models based on common aspect ratios
@@ -250,38 +253,16 @@ async function editImage(
     ? { inlineData: { data: await bloblToBase64(overlayBlob), mimeType: 'image/png' } }
     : null;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: GEMINI_IMAGE_MODEL_NAME,
-      contents: { parts: overlayPart ? [textPart, imagePart, maskPart, overlayPart] : [textPart, imagePart, maskPart] },
-      config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
-    });
-    const imagePartRes = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
-    if (imagePartRes?.inlineData) {
-      return `data:${imagePartRes.inlineData.mimeType};base64,${imagePartRes.inlineData.data}`;
-    }
-    throw new Error('Gemini did not return an image for editImage');
-  } catch (e) {
-    console.warn('Gemini edit failed', e);
-    if (!process.env.FAL_KEY || !falFallbackConfig.inpaint) {
-      throw e;
-    }
-    console.warn('Trying FAL inpainting fallback');
-    notifyFallback?.('Usando fallback FAL: inpainting');
+  const response = await ai.models.generateContent({
+    model: GEMINI_IMAGE_MODEL_NAME,
+    contents: { parts: overlayPart ? [textPart, imagePart, maskPart, overlayPart] : [textPart, imagePart, maskPart] },
+    config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+  });
+  const imagePartRes = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+  if (imagePartRes?.inlineData) {
+    return `data:${imagePartRes.inlineData.mimeType};base64,${imagePartRes.inlineData.data}`;
   }
-
-  // Fallback to FAL inpainting
-  const baseDataUrl = `data:image/png;base64,${imageBase64}`;
-  const maskDataUrl = `data:image/png;base64,${maskBase64}`;
-  const falImages = await falInpaint(prompt, baseDataUrl, maskDataUrl);
-  if (falImages.length > 0) {
-    // Fetch and convert to data URL
-    const res = await fetch(falImages[0]);
-    const blob = await res.blob();
-    const b64 = await bloblToBase64(blob);
-    return `data:${blob.type || 'image/png'};base64,${b64}`;
-  }
-  throw new Error('Image editing failed to produce an image.');
+  throw new Error('Gemini did not return an image for editImage');
 }
 
 async function generateImages(
@@ -291,99 +272,40 @@ async function generateImages(
   aspectRatio = '16:9',
 ): Promise<string[]> {
   const imageObjects = [];
+  // Always use Gemini 2.5 Image model (with or without reference image)
+  const baseImageBase64 = imageBlob ? await bloblToBase64(imageBlob) : null;
+  const mimeType = baseImageBase64?.match(/data:(.*);base64,/)?.[1] || 'image/png';
+  const imagePart = baseImageBase64 ? { inlineData: { mimeType, data: baseImageBase64 } } : null;
+  const textPart = { text: prompt };
 
-  if (imageBlob) {
-    const imageDataBase64 = await bloblToBase64(imageBlob);
-    const mimeType =
-      imageDataBase64.match(/data:(.*);base64,/)?.[1] || 'image/jpeg';
-
-    const imagePart = {inlineData: {mimeType, data: imageDataBase64}};
-    const textPart = {text: prompt};
-
-    try {
-      const generationPromises = Array.from({length: numberOfImages}).map(() =>
-        ai.models.generateContent({
-          model: GEMINI_IMAGE_MODEL_NAME,
-          contents: {parts: [imagePart, textPart]},
-          config: {
-            responseModalities: [Modality.IMAGE, Modality.TEXT],
-          },
-        }),
-      );
-      const responses = await Promise.all(generationPromises);
-
-      for (const res of responses) {
-        const imagePartRes = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
-        if (imagePartRes && imagePartRes.inlineData) {
-          const src = `data:${imagePartRes.inlineData.mimeType};base64,${imagePartRes.inlineData.data}`;
-          imageObjects.push(src);
-        }
-      }
-      if (imageObjects.length === 0) {
-        throw new Error('Gemini did not return images (image→image)');
-      }
-    } catch (e) {
-      console.warn('Gemini image-to-image failed', e);
-      if (process.env.FAL_KEY && falFallbackConfig.img2img) {
-        console.warn('Trying FAL image-to-image fallback');
-        notifyFallback?.('Usando fallback FAL: image-to-image');
-        // Fallback to FAL image-to-image
-        const dataUrl = imageDataBase64.startsWith('data:') ? imageDataBase64 : `data:${mimeType};base64,${imageDataBase64}`;
-        const falImgs = await falImageToImages(prompt, dataUrl, numberOfImages, aspectRatio);
-        for (const url of falImgs) {
-          try {
-            const r = await fetch(url);
-            const b = await r.blob();
-            const b64 = await bloblToBase64(b);
-            imageObjects.push(`data:${b.type || 'image/jpeg'};base64,${b64}`);
-          } catch {}
-        }
-      } else {
-        throw e;
-      }
-    }
-  } else {
-    try {
-      const response = await ai.models.generateImages({
-        model: IMAGEN_MODEL_NAME,
-        prompt,
-        config: {
-          numberOfImages,
-          aspectRatio: aspectRatio,
-          outputMimeType: 'image/jpeg',
-        },
-      });
-      if (response?.generatedImages) {
-        response.generatedImages.forEach((generatedImage: GeneratedImage) => {
-          if (generatedImage.image?.imageBytes) {
-            const src = `data:image/jpeg;base64,${generatedImage.image.imageBytes}`;
-            imageObjects.push(src);
-          }
-        });
-      }
-      if (imageObjects.length === 0) {
-        throw new Error('Imagen did not return images (text→image)');
-      }
-    } catch (e) {
-      console.warn('Imagen text-to-image failed', e);
-      if (process.env.FAL_KEY && falFallbackConfig.text2img) {
-        console.warn('Trying FAL text-to-image fallback');
-        notifyFallback?.('Usando fallback FAL: text-to-image');
-        const falImgs = await falTextToImages(prompt, numberOfImages, aspectRatio);
-        for (const url of falImgs) {
-          try {
-            const r = await fetch(url);
-            const b = await r.blob();
-            const b64 = await bloblToBase64(b);
-            imageObjects.push(`data:${b.type || 'image/jpeg'};base64,${b64}`);
-          } catch {}
-        }
-      } else {
-        throw e;
-      }
+  for (let i = 0; i < numberOfImages; i++) {
+    const res = await ai.models.generateContent({
+      model: GEMINI_IMAGE_MODEL_NAME,
+      contents: { parts: imagePart ? [imagePart, textPart] : [textPart] },
+      config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+    });
+    const inline = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData;
+    if (inline) {
+      imageObjects.push(`data:${inline.mimeType};base64,${inline.data}`);
     }
   }
-
+  if (imageObjects.length === 0) {
+    const retryPrompt = `${prompt}\nChange camera angle and lighting, vary background and composition; avoid reproducing the exact scene.`.trim();
+    for (let i = 0; i < numberOfImages; i++) {
+      const res = await ai.models.generateContent({
+        model: GEMINI_IMAGE_MODEL_NAME,
+        contents: { parts: imagePart ? [imagePart, { text: retryPrompt }] : [{ text: retryPrompt }] },
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+      });
+      const inline = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData)?.inlineData;
+      if (inline) {
+        imageObjects.push(`data:${inline.mimeType};base64,${inline.data}`);
+      }
+    }
+    if (imageObjects.length === 0) {
+      throw new Error('Gemini did not return images');
+    }
+  }
   return imageObjects;
 }
 
@@ -491,7 +413,7 @@ const describeClick = async (editor: Editor) => {
       const groupId = createShapeId();
 
       const PADDING = 24;
-      const MAX_WIDTH = 400;
+      const MAX_WIDTH = 360;
 
       // 1. Create a text shape with auto-sizing to determine its dimensions
       editor.createShape<TLTextShape>({
@@ -507,6 +429,7 @@ const describeClick = async (editor: Editor) => {
           richText: toRichText(response),
           autoSize: true, // auto-size height based on width
           w: MAX_WIDTH,
+          color: 'white',
         },
       });
 
@@ -536,21 +459,26 @@ const describeClick = async (editor: Editor) => {
           w: cardWidth,
           h: cardHeight,
           fill: 'semi',
-          color: 'grey', // semi-transparent grey fill with a solid grey border
+          color: 'grey', // liquid glass dark tone similar to prompt bar
         },
       });
+
+      // Ensure text is above the background card
+      editor.bringToFront([textShapeId]);
 
       // 4. Group the text and background shapes.
       editor.groupShapes([backgroundShapeId, textShapeId], {
         groupId: groupId,
       });
 
-      // 5. Place the new group on the canvas and connect it with an arrow.
+      // 5. Place the new group on the canvas.
       const newShapeGroup = editor.getShape(groupId);
       if (!newShapeGroup) return;
 
       placeNewShape(editor, newShapeGroup);
-      createArrowBetweenShapes(editor, shape.id, newShapeGroup.id);
+      if (ENABLE_CONNECTOR_ARROWS) {
+        createArrowBetweenShapes(editor, shape.id, newShapeGroup.id);
+      }
     });
 };
 
@@ -606,7 +534,7 @@ const genImageClick = async (
   const image = images.length > 0 ? images[0] : null;
 
   if (!promptText && image) {
-    promptText = `Generate a new version of this image, keeping the main subject, composition, and style as consistent as possible with the original. The final image must have an aspect ratio of ${aspectRatio}.`;
+    promptText = `Generate a new and different variant of this image. Keep the main subject recognizable, but change pose and composition, vary camera angle and lighting, and update background or small scene elements to create a distinct result. Avoid reproducing the scene exactly. The final image must have an aspect ratio of ${aspectRatio}.`;
   }
   if (!promptText && !image) return;
 
@@ -689,9 +617,11 @@ const genImageClick = async (
       });
       lastIds.push(newShapeId);
 
-      sourceShapesId.forEach((shapeId) => {
-        createArrowBetweenShapes(editor, shapeId, newShapeId);
-      });
+      if (ENABLE_CONNECTOR_ARROWS) {
+        sourceShapesId.forEach((shapeId) => {
+          createArrowBetweenShapes(editor, shapeId, newShapeId);
+        });
+      }
     }),
   );
 
@@ -813,9 +743,11 @@ const genVideoClick = async (editor: Editor, aspectRatio = '16:9') => {
       },
     });
 
-    sourceShapesId.forEach((shapeId) => {
-      createArrowBetweenShapes(editor, shapeId, lastId);
-    });
+    if (ENABLE_CONNECTOR_ARROWS) {
+      sourceShapesId.forEach((shapeId) => {
+        createArrowBetweenShapes(editor, shapeId, lastId);
+      });
+    }
   });
 
   if (lastId) {
@@ -892,6 +824,8 @@ const generateNewImage = async (
       props: {
         richText: toRichText(prompt),
         autoSize: true,
+        w: TEXT_CARD_MAX_W,
+        color: 'white',
       },
     });
 
@@ -908,6 +842,33 @@ const generateNewImage = async (
 
   // generate
   await genImageClick(editor, numberOfImages, aspectRatio);
+
+  // After generation, wrap the prompt text in a colored card (if still present and not grouped)
+  const textShape = editor.getShape<TLTextShape>(textShapeId);
+  if (textShape) {
+    const tb = editor.getShapePageBounds(textShapeId);
+    if (tb) {
+      const PADDING_X = 16;
+      const PADDING_Y = 10;
+      const cardId = createShapeId();
+      editor.createShape({
+        id: cardId,
+        type: 'geo',
+        x: tb.minX - PADDING_X,
+        y: tb.minY - PADDING_Y,
+        props: {
+          geo: 'rectangle',
+          w: tb.width + PADDING_X * 2,
+          h: tb.height + PADDING_Y * 2,
+          fill: 'semi',
+          color: 'grey',
+        },
+      });
+      // Make sure the text sits above the card
+      editor.bringToFront([textShapeId]);
+      editor.groupShapes([cardId, textShapeId]);
+    }
+  }
 };
 
 const generateNewVideo = async (
@@ -975,6 +936,8 @@ const generateNewVideo = async (
       props: {
         richText: toRichText(prompt),
         autoSize: true,
+        w: TEXT_CARD_MAX_W,
+        color: 'white',
       },
     });
 
@@ -991,6 +954,33 @@ const generateNewVideo = async (
 
   // generate
   await genVideoClick(editor, aspectRatio);
+
+  // After generation, wrap the prompt text in a colored card (if present)
+  const textShape = editor.getShape<TLTextShape>(textShapeId);
+  if (textShape) {
+    const tb = editor.getShapePageBounds(textShapeId);
+    if (tb) {
+      const PADDING_X = 16;
+      const PADDING_Y = 10;
+      const cardId = createShapeId();
+      editor.createShape({
+        id: cardId,
+        type: 'geo',
+        x: tb.minX - PADDING_X,
+        y: tb.minY - PADDING_Y,
+        props: {
+          geo: 'rectangle',
+          w: tb.width + PADDING_X * 2,
+          h: tb.height + PADDING_Y * 2,
+          fill: 'semi',
+          color: 'grey',
+        },
+      });
+      // Make sure the text sits above the card
+      editor.bringToFront([textShapeId]);
+      editor.groupShapes([cardId, textShapeId]);
+    }
+  }
 };
 
 const runEditImage = async (
@@ -1150,6 +1140,9 @@ const assetUrls: TldrawProps['assetUrls'] = {
     'genai-edit-image': await loadIcon('/genai-edit-image.svg'),
     'genai-use-in-chat': await loadIcon('/genai-use-in-chat.svg'),
   },
+  translations: {
+    'pt-br': '/translations/pt-br.json',
+  },
 };
 
 const OverlayComponent = track(
@@ -1211,6 +1204,7 @@ const OverlayComponent = track(
           }}>
           <DefaultToolbar />
         </div>
+        {process.env.SHOW_FALLBACK_PANEL === 'true' && (
         <div
           style={{
             position: 'absolute',
@@ -1261,6 +1255,7 @@ const OverlayComponent = track(
             video
           </label>
         </div>
+        )}
         <ContextualToolbarComponent
           setEditingImage={setEditingImage}
           mode={mode}
@@ -1286,7 +1281,48 @@ const OverlayComponent = track(
                 );
               }
             } catch (e) {
-              addToast({title: e.message, severity: 'error'});
+              const msg = (e as Error)?.message || String(e);
+              if (/did not return images/i.test(msg)) {
+                const hinted = `${prompt || ''}\nChange camera angle and lighting, vary background and composition; avoid reproducing the exact scene.`.trim();
+                addToast({
+                  title: 'Nenhuma imagem gerada',
+                  description:
+                    'Tente detalhar ângulo de câmera, iluminação, composição e estilo. Você pode pedir mudanças de pose e de fundo para criar variação.',
+                  severity: 'info',
+                  actions: [
+                    {
+                      type: 'primary',
+                      label: 'Tentar novamente',
+                      onClick: async () => {
+                        try {
+                          await generateNewImage(
+                            editor,
+                            hinted,
+                            image,
+                            options.numberOfImages,
+                            options.aspectRatio,
+                          );
+                        } catch (err) {
+                          addToast({ title: (err as Error).message, severity: 'error' });
+                        }
+                      },
+                    },
+                    {
+                      type: 'normal',
+                      label: 'Ver dicas',
+                      onClick: () =>
+                        addToast({
+                          title: 'Dicas rápidas',
+                          description:
+                            '• Especifique ângulo/câmera (close-up, wide, 3/4)\n• Luz (soft/hard, backlight)\n• Composição (regra dos terços)\n• Variação de pose/background\n• Estilo (fotografia/ilustração)',
+                          severity: 'info',
+                        }),
+                    },
+                  ],
+                });
+              } else {
+                addToast({ title: msg, severity: 'error' });
+              }
             }
           }}
           onAssistantSubmit={handleAssistantSubmit}
@@ -1613,6 +1649,26 @@ const Ui = () => {
     setNotifyFallback(() => (msg: string) => addToast({ title: msg, severity: 'info' }));
     return () => setNotifyFallback(null);
   }, [addToast]);
+  // Force-hide any residual tldraw branding helper buttons
+  useEffect(() => {
+    const hideBranding = () => {
+      document.querySelectorAll('.tlui-helper-buttons').forEach((el) => {
+        (el as HTMLElement).style.display = 'none';
+        (el as HTMLElement).style.visibility = 'hidden';
+      });
+      document.querySelectorAll('.tl-watermark_SEE-LICENSE, div[class*="watermark"], .tlui-watermark').forEach((el) => {
+        const node = el as HTMLElement;
+        node.style.display = 'none';
+        node.style.visibility = 'hidden';
+        node.style.opacity = '0';
+        node.style.pointerEvents = 'none';
+      });
+    };
+    hideBranding();
+    const obs = new MutationObserver(hideBranding);
+    obs.observe(document.body, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }, []);
 
   const handleSaveEditedImage = async (assetId: TLAssetId, newSrc: string) => {
     try {
@@ -1654,7 +1710,7 @@ const Ui = () => {
     {
       name: 'generateImage',
       description:
-        'Generates a new image from a text prompt. Use this to create something from scratch. Do not use this to edit or modify an existing image.',
+        'Generates a new image from a text prompt, or from a text + image reference when provided in chat. Use this to create variations or new images. For precise area edits use editImage.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -1669,6 +1725,22 @@ const Ui = () => {
           aspectRatio: {
             type: Type.STRING,
             description: 'The aspect ratio of the images.',
+          },
+          variationStrength: {
+            type: Type.NUMBER,
+            description: '0.0-1.0. Higher = more differences from the reference (if any). Embed instruction in prompt.',
+          },
+          stylePreset: {
+            type: Type.STRING,
+            description: 'Optional style or art direction to apply. Embed instruction in prompt.',
+          },
+          negativePrompt: {
+            type: Type.STRING,
+            description: 'Things to avoid. Embed as “Avoid: …” in prompt.',
+          },
+          seed: {
+            type: Type.NUMBER,
+            description: 'If provided, include in prompt for reproducibility.',
           },
         },
         required: ['prompt'],
@@ -1687,6 +1759,49 @@ const Ui = () => {
           },
         },
         required: ['prompt'],
+      },
+    },
+    {
+      name: 'removeBackground',
+      description:
+        'Remove the background of the selected image, making background transparent. Use when the user explicitly asks for background removal.',
+      parameters: { type: Type.OBJECT, properties: {}, required: [] },
+    },
+    {
+      name: 'applyOverlay',
+      description:
+        'Flatten one image onto another without AI. Use when the user wants pixel-perfect placement (e.g., logo onto banner). If overlay not specified, use assistant chat image as overlay and the currently selected image as base.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          baseShapeId: { type: Type.STRING, description: 'Optional base image TLShapeId. Defaults to selected base.' },
+          overlayShapeId: { type: Type.STRING, description: 'Optional overlay image TLShapeId. Defaults to assistant image or second selection.' },
+        },
+      },
+    },
+    {
+      name: 'composeAI',
+      description:
+        'Compose overlay into base image using AI (soft blend). If region not specified, blend naturally. Prefer applyOverlay for strict fidelity; use this for natural integration.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          prompt: { type: Type.STRING, description: 'Guidance for how to place/integrate the overlay.' },
+          baseShapeId: { type: Type.STRING, description: 'Optional base image TLShapeId' },
+          overlayShapeId: { type: Type.STRING, description: 'Optional overlay image TLShapeId' },
+        },
+        required: ['prompt'],
+      },
+    },
+    {
+      name: 'upscaleImage',
+      description:
+        'Upscale the selected image using AI regeneration (approximate). Use when user requests higher resolution output.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          factor: { type: Type.NUMBER, description: '2 by default. Regenerate with higher detail.' },
+        },
       },
     },
     {
@@ -1710,6 +1825,17 @@ const Ui = () => {
         required: ['prompt'],
       },
     },
+    {
+      name: 'plan',
+      description:
+        'Propose a short plan (2-5 steps) and then execute the steps using the available tools. Use for multi-step requests. Optionally ask for confirmation first.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          steps: { type: Type.ARRAY, description: 'Array of step descriptions', items: { type: Type.STRING } },
+        },
+      },
+    },
   ];
 
   const tools: Tool[] = [{functionDeclarations: toolDeclarations}];
@@ -1731,8 +1857,22 @@ const Ui = () => {
         model: GEMINI_MODEL_NAME,
         config: {
           tools: tools,
-          systemInstruction:
-            "You are a helpful assistant integrated into a canvas application. You can use the provided tools to generate and edit images and videos directly on the canvas. When the user provides an image and asks to modify it (e.g., add something, change colors, add text), you MUST use the `editImage` tool. Use `generateImage` only for creating entirely new images from a text prompt.",
+          systemInstruction: `You are a helpful canvas assistant with tool access. Your job is to choose and sequence tools to achieve the user's goal with minimal back-and-forth.
+ - Prefer:
+   * generateImage: creating or varying images (text or text+reference). Add style/variation/negative if provided.
+   * editImage: precise/local changes; open the mask editor for the selected image.
+   * removeBackground: when asked to remove background.
+   * applyOverlay: pixel-perfect placement (e.g., logo → banner).
+   * composeAI: natural integration of overlay using AI.
+   * upscaleImage: increase resolution / clarity.
+   * generateVideo: when asked for motion from text and/or one image.
+ - When unclear or multi-step, call plan first with 2–5 concise steps, then proceed.
+ - Prompts:
+   * For variants, include guidance to change pose/composition/angle/lighting and not reproduce scene exactly.
+   * If negativePrompt/stylePreset/variationStrength/seed provided, weave into the prompt text.
+ - Context images:
+   * If the user clicks "Use in Chat", treat that as reference/overlay.
+   * If a base image is selected, treat that as target for edit/compose.`,
         },
       });
     if (!chatSession) setChatSession(chat);
@@ -1753,7 +1893,30 @@ const Ui = () => {
 
     setChatHistory((prev) => [...prev, {role: 'user', parts: userParts}]);
 
-    let response = await chat.sendMessage({message: userParts});
+    let response;
+    try {
+      response = await chat.sendMessage({message: userParts});
+    } catch (err) {
+      const msg = (err as Error)?.message || String(err);
+      if (/INTERNAL|code":500|status":\s*500/i.test(msg)) {
+        addToast({
+          title: 'Assistente (Pro) indisponível',
+          description: 'Alternando para modelo Flash para continuar.',
+          severity: 'info',
+        });
+        const fallbackChat = ai.chats.create({
+          model: 'gemini-2.5-flash',
+          config: {
+            tools: tools,
+            systemInstruction: `You are a helpful canvas assistant with tool access. Your job is to choose and sequence tools to achieve the user's goal with minimal back-and-forth.\n - Prefer:\n   * generateImage: creating or varying images (text or text+reference). Add style/variation/negative if provided.\n   * editImage: precise/local changes; open the mask editor for the selected image.\n   * removeBackground: when asked to remove background.\n   * applyOverlay: pixel-perfect placement (e.g., logo → banner).\n   * composeAI: natural integration of overlay using AI.\n   * upscaleImage: increase resolution / clarity.\n   * generateVideo: when asked for motion from text and/or one image.\n - When unclear or multi-step, call plan first with 2–5 concise steps, then proceed.\n - Prompts:\n   * For variants, include guidance to change pose/composition/angle/lighting and not reproduce scene exactly.\n   * If negativePrompt/stylePreset/variationStrength/seed provided, weave into the prompt text.\n - Context images:\n   * If the user clicks \"Use in Chat\", treat that as reference/overlay.\n   * If a base image is selected, treat that as target for edit/compose.`,
+          },
+        });
+        setChatSession(fallbackChat);
+        response = await fallbackChat.sendMessage({message: userParts});
+      } else {
+        throw err;
+      }
+    }
 
   while (response.candidates[0].content.parts[0].functionCall) {
       const fn = response.candidates[0].content.parts[0].functionCall;
@@ -1797,7 +1960,14 @@ const Ui = () => {
             }
           }
         } else if (fn.name === 'generateImage') {
-          const {prompt, numberOfImages, aspectRatio} = fn.args;
+          let {prompt, numberOfImages, aspectRatio, variationStrength, stylePreset, negativePrompt, seed} = fn.args as any;
+          // Weave advanced options into prompt
+          const extras: string[] = [];
+          if (variationStrength != null) extras.push(`Variation strength: ${variationStrength}.`);
+          if (stylePreset) extras.push(`Style: ${stylePreset}.`);
+          if (negativePrompt) extras.push(`Avoid: ${negativePrompt}.`);
+          if (seed != null) extras.push(`Seed: ${seed}.`);
+          if (extras.length) prompt = `${prompt}\n${extras.join(' ')}`;
           const textShapeId = createShapeId();
           editor.createShape({
             id: textShapeId,
@@ -1805,6 +1975,7 @@ const Ui = () => {
             props: {
               richText: toRichText(prompt as string),
               autoSize: true,
+              w: TEXT_CARD_MAX_W,
             },
           });
           const textShape = editor.getShape(textShapeId);
@@ -1831,12 +2002,86 @@ const Ui = () => {
             (aspectRatio as string) ?? '16:9',
           );
           result = {output: 'Successfully generated video.'};
+        } else if (fn.name === 'removeBackground') {
+          if (!shapeIdForEditing) {
+            result = { error: 'Select an image and click “Use in Chat” or select base image.' };
+          } else {
+            await runEditImage(editor, 'Remove the background and make it transparent while preserving the main subject.', shapeIdForEditing);
+            result = { output: 'Background removed.' };
+          }
+        } else if (fn.name === 'applyOverlay') {
+          const { baseShapeId, overlayShapeId } = fn.args as any;
+          let baseId = baseShapeId as TLShapeId | undefined;
+          let overlayId = overlayShapeId as TLShapeId | undefined;
+          if (!baseId) baseId = shapeIdForEditing;
+          if (!overlayId && lastAssistantImageInChat) overlayId = lastAssistantImageInChat.shapeId as TLShapeId;
+          if (!baseId || !overlayId) {
+            result = { error: 'Provide base/overlay or select base and use an assistant image as overlay.' };
+          } else {
+            await bakeOverlayBetweenShapes(editor, baseId, overlayId);
+            result = { output: 'Overlay applied (flattened).' };
+          }
+        } else if (fn.name === 'composeAI') {
+          const { prompt: composePrompt, baseShapeId, overlayShapeId } = fn.args as any;
+          let baseId = (baseShapeId as TLShapeId) || shapeIdForEditing;
+          let overlayId = (overlayShapeId as TLShapeId) || (lastAssistantImageInChat?.shapeId as TLShapeId);
+          if (!baseId || !overlayId) {
+            result = { error: 'Provide base/overlay or select base and use an assistant image as overlay.' };
+          } else {
+            // Export base & overlay, call editImage with full mask and overlay blob
+            const baseShape = editor.getShape<TLImageShape>(baseId);
+            const overlayShape = editor.getShape<TLImageShape>(overlayId);
+            if (!baseShape || !overlayShape) {
+              result = { error: 'Either base or overlay is not an image.' };
+            } else {
+              const baseExport = await editor.toImage([baseId], { format: 'png', scale: 1, background: true });
+              const overlayExport = await editor.toImage([overlayId], { format: 'png', scale: 1, background: true });
+              // Make a full-white mask covering the whole base
+              const maskCanvas = document.createElement('canvas');
+              maskCanvas.width = baseExport.blob ? (await createImageBitmap(baseExport.blob)).width : 1024;
+              maskCanvas.height = baseExport.blob ? (await createImageBitmap(baseExport.blob)).height : 1024;
+              const mctx = maskCanvas.getContext('2d')!;
+              mctx.fillStyle = 'white';
+              mctx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+              const maskBlob = await new Promise<Blob | null>((resolve) => maskCanvas.toBlob(resolve, 'image/png'));
+              if (!maskBlob) throw new Error('Could not create mask for composeAI');
+              const newSrc = await editImage(baseExport.blob, maskBlob, `Integrate the overlay image into the base naturally. ${composePrompt}`, overlayExport.blob);
+              await handleSaveEditedImage(baseShape.props.assetId, newSrc);
+              result = { output: 'Overlay composed with AI.' };
+            }
+          }
+        } else if (fn.name === 'upscaleImage') {
+          const { factor } = fn.args as any;
+          if (!shapeIdForEditing) {
+            result = { error: 'Select an image to upscale.' };
+          } else {
+            await runEditImage(
+              editor,
+              `Upscale by ${factor ?? 2}x while preserving details and sharpness.`,
+              shapeIdForEditing,
+            );
+            result = { output: 'Image upscaled.' };
+          }
+        } else if (fn.name === 'plan') {
+          const { steps } = fn.args as any;
+          result = { output: `Plan acknowledged: ${(steps || []).join(' -> ')}` };
         } else {
           throw new Error(`Unknown tool ${fn.name}`);
         }
       } catch (e) {
         console.error(e);
-        result = {error: e.message};
+        const msg = (e as Error)?.message || String(e);
+        if (/did not return images/i.test(msg)) {
+          addToast({
+            title: 'Nenhuma imagem gerada',
+            description:
+              'Tente pedir mudanças de pose, ângulo de câmera, iluminação e fundo. Evite reproduzir a cena exatamente.',
+            severity: 'info',
+          });
+          result = { error: 'O modelo não retornou imagem. Experimente detalhar ângulo/iluminação/composição e variar pose e fundo.' };
+        } else {
+          result = { error: msg };
+        }
       }
 
       // FIX: The value of `message` should be an array of `Part` objects. The `parts` wrapper is incorrect.
@@ -1881,18 +2126,18 @@ const Ui = () => {
 export default function App() {
   return (
     <>
-      <NoticeBanner />
       <Tldraw
         inferDarkMode
         components={{
           InFrontOfTheCanvas: Ui,
           Toolbar: () => null,
+          HelperButtons: null,
         }}
         assetUrls={assetUrls}
         onMount={(editor) => {
           editor.user.updateUserPreferences({
             animationSpeed: 1,
-            locale: 'en',
+            ...(process.env.FORCE_EN_LOCALE === 'true' ? { locale: 'en' } : { locale: 'pt-br' }),
           });
           editor.zoomToFit();
         }}

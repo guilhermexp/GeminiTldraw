@@ -52,8 +52,7 @@ export function ImageEditor({
     const resizeCanvas = () => {
       canvas.width = imageEl.clientWidth;
       canvas.height = imageEl.clientHeight;
-      ctx.fillStyle = 'black';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
     };
 
     if (imageEl.complete) {
@@ -133,6 +132,9 @@ export function ImageEditor({
 
       maskCanvas.width = originalImage.naturalWidth;
       maskCanvas.height = originalImage.naturalHeight;
+      // Fill mask base as black (no change), then draw white strokes from visible canvas
+      maskCtx.fillStyle = 'black';
+      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.drawImage(canvasRef.current!, 0, 0, maskCanvas.width, maskCanvas.height);
 
       const maskBlob = await new Promise<Blob | null>((resolve) =>
